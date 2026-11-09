@@ -42,10 +42,10 @@ index 72f44dea..0fcdc920 100644
  	/**
 diff --git a/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
 new file mode 100644
-index 00000000..68bde10f
+index 00000000..90b7ed36
 --- /dev/null
 +++ b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,171 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Horizon. All rights reserved.
 + *  Licensed under the MIT License.
@@ -66,7 +66,8 @@ index 00000000..68bde10f
 +import { Disposable } from '../../../../base/common/lifecycle.js';
 +import { disposableTimeout } from '../../../../base/common/async.js';
 +import { VIEWLET_ID as SCM_VIEWLET_ID } from '../../scm/common/scm.js';
-+import './horizonScreens.js';
++import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
++import { IHorizonScreenService } from './horizonScreens.js';
 +
 +const EXPLORER_CONTAINER_ID = 'workbench.view.explorer';
 +const SCM_OPEN_COMMAND_SETTING = 'horizon.scm.openCommand';
@@ -103,6 +104,8 @@ index 00000000..68bde10f
 +		@IConfigurationService private readonly configurationService: IConfigurationService,
 +		@INotificationService private readonly notificationService: INotificationService,
 +		@ILogService private readonly logService: ILogService,
++		@IHorizonScreenService private readonly screenService: IHorizonScreenService,
++		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService,
 +	) {
 +		super();
 +
@@ -120,6 +123,9 @@ index 00000000..68bde10f
 +				disposableTimeout(() => void this.redirect(id, command), 0, this._store);
 +			} else {
 +				this.lastSidebarId = id;
++				if (!this.redirecting) {
++					this.closeScreenForSidebar(); // the user opened a regular side bar view
++				}
 +			}
 +		}));
 +
@@ -138,6 +144,18 @@ index 00000000..68bde10f
 +		}
 +
 +		return this.viewDescriptorService.getViewContainerById(id)?.openCommand;
++	}
++
++	private closeScreenForSidebar(): void {
++		if (this.screenService.activeScreen === undefined) {
++			return;
++		}
++
++		// A screen and the side bar are never shown together: close the screen so the editors return.
++		this.screenService.hide();
++		if (!this.layoutService.hasFocus(Parts.SIDEBAR_PART)) {
++			this.editorGroupService.mainPart.activeGroup.focus();
++		}
 +	}
 +
 +	private async redirect(id: string, command: string): Promise<void> {
@@ -201,10 +219,10 @@ index 00000000..68bde10f
 +registerWorkbenchContribution2(HorizonActivityBarDefaultsContribution.ID, HorizonActivityBarDefaultsContribution, WorkbenchPhase.BlockStartup);
 diff --git a/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts b/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts
 new file mode 100644
-index 00000000..e7c3b486
+index 00000000..17d44574
 --- /dev/null
 +++ b/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,430 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Horizon. All rights reserved.
 + *  Licensed under the MIT License.
@@ -221,7 +239,7 @@ index 00000000..e7c3b486
 +import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 +import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 +import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
-+import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
++import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 +import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
 +import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 +import { createDecorator, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -230,6 +248,7 @@ index 00000000..e7c3b486
 +import { INotificationService } from '../../../../platform/notification/common/notification.js';
 +import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 +import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
++import { IsAuxiliaryWindowContext } from '../../../common/contextkeys.js';
 +import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 +import { IEditorService } from '../../../services/editor/common/editorService.js';
 +import { IExtensionService } from '../../../services/extensions/common/extensions.js';
@@ -244,6 +263,9 @@ index 00000000..e7c3b486
 +const ACTIVE_SCREEN_STORAGE_KEY = 'horizon.screens.active';
 +
 +export const ActiveScreenContext = new RawContextKey<string>('horizonActiveScreen', '', localize('horizonActiveScreen', "Id of the editor-area screen that is shown, or empty when none is shown."));
++
++/** Close Screen applies while a screen is shown and focus is in the main window (not in a floating editor window). */
++const CloseScreenContext = ContextKeyExpr.and(ActiveScreenContext, IsAuxiliaryWindowContext.toNegated());
 +
 +interface IScreenContribution {
 +	readonly id: string;
@@ -309,6 +331,7 @@ index 00000000..e7c3b486
 +	private readonly activeScreenContext: IContextKey<string>;
 +	private host: HTMLElement | undefined;
 +	private active: IScreenEntry | undefined;
++	private suspended = false; // the editor part is hidden (for example a maximized panel) while a screen is active
 +
 +	constructor(
 +		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
@@ -367,15 +390,16 @@ index 00000000..e7c3b486
 +			}));
 +		});
 +
-+		// Follow the visibility of the editor part (for example a maximized panel).
++		// While the editor part is hidden (for example a maximized panel) the screen is suspended:
++		// hidden, reported as not visible and without the context key. It comes back with the editor part.
 +		this._register(this.layoutService.onDidChangePartVisibility(e => {
 +			if (e.partId !== Parts.EDITOR_PART || !this.active) {
 +				return;
 +			}
 +			if (e.visible) {
-+				this.attach(this.active);
++				this.resume(this.active);
 +			} else {
-+				this.active.webview.release(this);
++				this.suspend(this.active);
 +			}
 +		}));
 +	}
@@ -431,7 +455,8 @@ index 00000000..e7c3b486
 +			});
 +		}
 +
-+		if (!options?.preserveFocus) {
++		// Never leave keyboard focus in the editors hidden under the screen.
++		if (!options?.preserveFocus || this.layoutService.hasFocus(Parts.EDITOR_PART)) {
 +			entry.webview.focus();
 +		}
 +	}
@@ -446,14 +471,38 @@ index 00000000..e7c3b486
 +			return;
 +		}
 +
++		const wasSuspended = this.suspended;
 +		this.active = undefined;
++		this.suspended = false;
 +		entry.webview.release(this);
 +		this.host?.parentElement?.classList.remove('horizon-screen-visible');
 +		this.activeScreenContext.reset();
 +		if (updateStorage) {
 +			this.storageService.remove(ACTIVE_SCREEN_STORAGE_KEY, StorageScope.WORKSPACE);
 +		}
++		if (!wasSuspended) {
++			entry.onDidChangeVisibility.fire(false); // a suspended screen already reported false
++		}
++	}
++
++	private suspend(entry: IScreenEntry): void {
++		if (this.suspended) {
++			return;
++		}
++		this.suspended = true;
++		entry.webview.release(this);
++		this.activeScreenContext.reset();
 +		entry.onDidChangeVisibility.fire(false);
++	}
++
++	private resume(entry: IScreenEntry): void {
++		this.attach(entry);
++		if (!this.suspended) {
++			return;
++		}
++		this.suspended = false;
++		this.activeScreenContext.set(entry.descriptor.id);
++		entry.onDidChangeVisibility.fire(true);
 +	}
 +
 +	private getHost(): HTMLElement {
@@ -560,10 +609,10 @@ index 00000000..e7c3b486
 +			title: localize2('horizonScreens.close', "Close Screen"),
 +			category: localize2('horizonScreens.category', "Horizon"),
 +			f1: true,
-+			precondition: ActiveScreenContext.notEqualsTo(''),
++			precondition: CloseScreenContext,
 +			keybinding: {
 +				weight: KeybindingWeight.WorkbenchContrib + 1,
-+				when: ActiveScreenContext.notEqualsTo(''),
++				when: CloseScreenContext,
 +				primary: KeyMod.CtrlCmd | KeyCode.KeyW,
 +				win: { primary: KeyMod.CtrlCmd | KeyCode.F4, secondary: [KeyMod.CtrlCmd | KeyCode.KeyW] }
 +			}

@@ -59,7 +59,7 @@ Built-in extensions (`extension.isBuiltin`) may set two extra fields on `contrib
 
 Extensions that are not built in ignore both fields, so marketplace extensions are unaffected.
 
-When a container with an `openCommand` is opened in the side bar, a workbench contribution (`contrib/horizon/browser/horizon.contribution.ts`) re-opens the last regular side bar container (Explorer if that one is itself a launcher), hides the side bar, and runs the command.
+When a container with an `openCommand` is opened in the side bar, a workbench contribution (`contrib/horizon/browser/horizon.contribution.ts`) re-opens the last regular side bar container (Explorer if that one is itself a launcher), hides the side bar, and runs the command. The same contribution closes an editor-area screen when a regular side bar view is opened outside such a redirect.
 
 ### `horizon.scm.openCommand`
 
@@ -79,8 +79,9 @@ Quick diff (gutter, overview ruler and minimap decorations) is unaffected. It de
 
 - Built-in extensions may declare `contributes.horizonScreens`: an array of `{ "id": string, "title": string }`, where each `id` is a webview view the extension registers with `window.registerWebviewViewProvider`. Other extensions are ignored with a warning.
 - `horizon.workbench.showScreen` (arguments: the screen id, optionally `{ preserveFocus: boolean }`) shows that webview over the whole main editor area, without a tab or header. It hides the side bar, and the editor groups underneath are hidden but kept.
-- The screen closes when an editor opens in the main editor area, or with **Horizon: Close Screen** (Ctrl+W / Ctrl+F4 while a screen is shown). No editor is closed.
-- The side bar, panel and secondary side bar can be shown next to a screen. One screen is shown at a time, and hidden screens keep their webview for the session.
+- The screen closes, and the editors return, when an editor opens in the main editor area, when a regular side bar view is opened (activity bar, view commands, Ctrl+B), or with **Horizon: Close Screen** (Ctrl+W / Ctrl+F4 while a screen is shown and focus is in the main window). No editor is closed.
+- A screen and the side bar are never shown together; the redirect of a launcher container does not close the screen. The panel and secondary side bar can be shown next to a screen. One screen is shown at a time, and hidden screens keep their webview for the session.
+- While the editor area is hidden (maximized panel or secondary side bar) the screen is suspended: it is hidden, reported as not visible, and `horizonActiveScreen` is empty. It comes back with the editor area.
 - The shown screen is restored after a window reload when the side bar is hidden. The context key `horizonActiveScreen` holds its id (empty when none is shown).
 - `onView:<id>` activation events are generated from the contribution.
 
