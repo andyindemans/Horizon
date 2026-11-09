@@ -1,0 +1,259 @@
+diff --git a/src/vs/workbench/api/browser/viewsExtensionPoint.ts b/src/vs/workbench/api/browser/viewsExtensionPoint.ts
+index 83378707..052de3bd 100644
+--- a/src/vs/workbench/api/browser/viewsExtensionPoint.ts
++++ b/src/vs/workbench/api/browser/viewsExtensionPoint.ts
+@@ -37,2 +37,5 @@ export interface IUserFriendlyViewsContainerDescriptor {
+ 	icon: string;
++	// Horizon: honoured for built-in extensions only
++	order?: number;
++	command?: string;
+ }
+@@ -384,3 +387,6 @@ class ViewsExtensionHandler implements IWorkbenchContribution {
+ 			const title = descriptor.title || id;
+-			const viewContainer = this.registerCustomViewContainer(id, title, icon, order++, extension.identifier, location);
++			const builtin = extension.isBuiltin;
++			const containerOrder = builtin && typeof descriptor.order === 'number' ? descriptor.order : order++;
++			const openCommand = builtin && typeof descriptor.command === 'string' && descriptor.command.length > 0 ? descriptor.command : undefined;
++			const viewContainer = this.registerCustomViewContainer(id, title, icon, containerOrder, extension.identifier, location, openCommand);
+ 
+@@ -402,3 +408,3 @@ class ViewsExtensionHandler implements IWorkbenchContribution {
+ 
+-	private registerCustomViewContainer(id: string, title: string, icon: URI | ThemeIcon, order: number, extensionId: ExtensionIdentifier | undefined, location: ViewContainerLocation): ViewContainer {
++	private registerCustomViewContainer(id: string, title: string, icon: URI | ThemeIcon, order: number, extensionId: ExtensionIdentifier | undefined, location: ViewContainerLocation, openCommand?: string): ViewContainer {
+ 		let viewContainer = this.viewContainersRegistry.get(id);
+@@ -415,3 +421,4 @@ class ViewsExtensionHandler implements IWorkbenchContribution {
+ 				),
+-				hideIfEmpty: true,
++				hideIfEmpty: !openCommand,
++				...(openCommand ? { openCommand, rejectAddedViews: true } : {}),
+ 				order,
+diff --git a/src/vs/workbench/common/views.ts b/src/vs/workbench/common/views.ts
+index 72f44dea..0fcdc920 100644
+--- a/src/vs/workbench/common/views.ts
++++ b/src/vs/workbench/common/views.ts
+@@ -139,2 +139,8 @@ export interface IViewContainerDescriptor {
+ 
++	/**
++	 * Horizon: when set, opening this view container in the side bar runs this command
++	 * instead of showing the container (see contrib/horizon/browser/horizon.contribution.ts).
++	 */
++	readonly openCommand?: string;
++
+ 	/**
+diff --git a/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
+new file mode 100644
+index 00000000..b2912fef
+--- /dev/null
++++ b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
+@@ -0,0 +1,152 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Horizon. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { localize } from '../../../../nls.js';
++import { Registry } from '../../../../platform/registry/common/platform.js';
++import { IViewDescriptorService, ViewContainerLocation } from '../../../common/views.js';
++import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
++import { IPaneCompositePartService } from '../../../services/panecomposite/browser/panecomposite.js';
++import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
++import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { IConfigurationRegistry, Extensions as ConfigurationExtensions, ConfigurationScope } from '../../../../platform/configuration/common/configurationRegistry.js';
++import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
++import { INotificationService } from '../../../../platform/notification/common/notification.js';
++import { ILogService } from '../../../../platform/log/common/log.js';
++import { Disposable } from '../../../../base/common/lifecycle.js';
++import { disposableTimeout } from '../../../../base/common/async.js';
++import { VIEWLET_ID as SCM_VIEWLET_ID } from '../../scm/common/scm.js';
++
++const EXPLORER_CONTAINER_ID = 'workbench.view.explorer';
++const SCM_OPEN_COMMAND_SETTING = 'horizon.scm.openCommand';
++const UNPIN_BY_DEFAULT = ['workbench.view.debug', 'workbench.view.extension.test', 'workbench.view.remote'];
++
++Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
++	id: 'horizon',
++	order: 100,
++	title: localize('horizonConfigurationTitle', "Horizon"),
++	type: 'object',
++	properties: {
++		[SCM_OPEN_COMMAND_SETTING]: {
++			type: 'string',
++			default: '',
++			scope: ConfigurationScope.WINDOW,
++			restricted: true,
++			description: localize('horizon.scm.openCommand', "When set, opening the Source Control view runs this command instead, and the built-in Source Control views are hidden. The value is a command ID; it is ignored in untrusted workspaces. Built-in extensions may provide a default.")
++		}
++	}
++});
++
++class HorizonLauncherContribution extends Disposable implements IWorkbenchContribution {
++
++	static readonly ID = 'workbench.contrib.horizonLaunchers';
++
++	private lastSidebarId: string;
++	private redirecting = false;
++
++	constructor(
++		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
++		@IPaneCompositePartService private readonly paneCompositeService: IPaneCompositePartService,
++		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
++		@ICommandService private readonly commandService: ICommandService,
++		@IConfigurationService private readonly configurationService: IConfigurationService,
++		@INotificationService private readonly notificationService: INotificationService,
++		@ILogService private readonly logService: ILogService,
++	) {
++		super();
++
++		const activeId = this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Sidebar)?.getId();
++		this.lastSidebarId = activeId && !this.getCommand(activeId) ? activeId : EXPLORER_CONTAINER_ID;
++
++		this._register(this.paneCompositeService.onDidPaneCompositeOpen(e => {
++			if (e.viewContainerLocation !== ViewContainerLocation.Sidebar) {
++				return;
++			}
++
++			const id = e.composite.getId();
++			const command = this.getCommand(id);
++			if (command) {
++				disposableTimeout(() => void this.redirect(id, command), 0, this._store);
++			} else {
++				this.lastSidebarId = id;
++			}
++		}));
++
++		if (activeId && this.layoutService.isVisible(Parts.SIDEBAR_PART)) {
++			const command = this.getCommand(activeId);
++			if (command) {
++				disposableTimeout(() => void this.redirect(activeId, command), 0, this._store);
++			}
++		}
++	}
++
++	private getCommand(id: string): string | undefined {
++		if (id === SCM_VIEWLET_ID) {
++			const value = this.configurationService.getValue<unknown>(SCM_OPEN_COMMAND_SETTING);
++			return typeof value === 'string' && value.length > 0 ? value : undefined;
++		}
++
++		return this.viewDescriptorService.getViewContainerById(id)?.openCommand;
++	}
++
++	private async redirect(id: string, command: string): Promise<void> {
++		if (this.redirecting) {
++			return;
++		}
++
++		this.redirecting = true;
++		try {
++			const target = this.getCommand(this.lastSidebarId) ? EXPLORER_CONTAINER_ID : this.lastSidebarId; // never re-open a launcher
++			await this.paneCompositeService.openPaneComposite(target, ViewContainerLocation.Sidebar, false);
++			this.layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
++			await this.commandService.executeCommand(command);
++		} catch (err) {
++			const title = this.viewDescriptorService.getViewContainerById(id)?.title.value ?? id;
++			this.logService.error(err);
++			this.notificationService.error(localize('horizon.launcherFailed', "Could not open {0}: {1}", title, String(err)));
++		} finally {
++			this.redirecting = false;
++		}
++	}
++}
++
++class HorizonActivityBarDefaultsContribution implements IWorkbenchContribution {
++
++	static readonly ID = 'workbench.contrib.horizonActivityBarDefaults';
++
++	private static readonly PINNED_KEY = 'workbench.activity.pinnedViewlets2';
++	private static readonly MARKER_KEY = 'horizon.activityBar.defaultsApplied';
++
++	constructor(
++		@IStorageService storageService: IStorageService,
++	) {
++		if (storageService.getBoolean(HorizonActivityBarDefaultsContribution.MARKER_KEY, StorageScope.PROFILE, false)) {
++			return;
++		}
++
++		let entries: { id: string; pinned: boolean; visible: boolean; order?: number }[];
++		try {
++			const parsed = JSON.parse(storageService.get(HorizonActivityBarDefaultsContribution.PINNED_KEY, StorageScope.PROFILE, '[]'));
++			entries = Array.isArray(parsed) ? parsed : [];
++		} catch {
++			entries = [];
++		}
++
++		for (const id of UNPIN_BY_DEFAULT) {
++			const existing = entries.find(entry => entry.id === id);
++			if (existing) {
++				existing.pinned = false;
++			} else {
++				entries.push({ id, pinned: false, visible: true });
++			}
++		}
++
++		storageService.store(HorizonActivityBarDefaultsContribution.PINNED_KEY, JSON.stringify(entries), StorageScope.PROFILE, StorageTarget.USER);
++		storageService.store(HorizonActivityBarDefaultsContribution.MARKER_KEY, true, StorageScope.PROFILE, StorageTarget.MACHINE);
++	}
++}
++
++registerWorkbenchContribution2(HorizonLauncherContribution.ID, HorizonLauncherContribution, WorkbenchPhase.AfterRestored);
++registerWorkbenchContribution2(HorizonActivityBarDefaultsContribution.ID, HorizonActivityBarDefaultsContribution, WorkbenchPhase.BlockStartup);
+diff --git a/src/vs/workbench/contrib/scm/browser/scm.contribution.ts b/src/vs/workbench/contrib/scm/browser/scm.contribution.ts
+index 22920b5f..9cb02084 100644
+--- a/src/vs/workbench/contrib/scm/browser/scm.contribution.ts
++++ b/src/vs/workbench/contrib/scm/browser/scm.contribution.ts
+@@ -63,4 +63,16 @@ const viewContainer = Registry.as<IViewContainersRegistry>(ViewContainerExtensio
+ 	order: 2,
+-	hideIfEmpty: true,
+-}, ViewContainerLocation.Sidebar, { doNotRegisterOpenCommand: true });
++	hideIfEmpty: false,
++	// Horizon: the open command lives on the container so it keeps working when the native views are hidden
++	openCommandActionDescriptor: {
++		id: VIEWLET_ID,
++		mnemonicTitle: localize({ key: 'miViewSCM', comment: ['&& denotes a mnemonic'] }, "Source &&Control"),
++		keybindings: {
++			primary: 0,
++			win: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyG },
++			linux: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyG },
++			mac: { primary: KeyMod.WinCtrl | KeyMod.Shift | KeyCode.KeyG },
++		},
++		order: 2,
++	},
++}, ViewContainerLocation.Sidebar);
+ 
+@@ -100,3 +112,3 @@ viewsRegistry.registerViews([{
+ 	order: 0,
+-	when: ContextKeyExpr.and(ContextKeyExpr.has('scm.providerCount'), ContextKeyExpr.notEquals('scm.providerCount', 0)),
++	when: ContextKeyExpr.and(ContextKeyExpr.not('config.horizon.scm.openCommand'), ContextKeyExpr.has('scm.providerCount'), ContextKeyExpr.notEquals('scm.providerCount', 0)),
+ 	// readonly when = ContextKeyExpr.or(ContextKeyExpr.equals('config.scm.alwaysShowProviders', true), ContextKeyExpr.and(ContextKeyExpr.notEquals('scm.providerCount', 0), ContextKeyExpr.notEquals('scm.providerCount', 1)));
+@@ -115,14 +127,4 @@ viewsRegistry.registerViews([{
+ 	order: 1,
+-	containerIcon: sourceControlViewIcon,
+-	openCommandActionDescriptor: {
+-		id: viewContainer.id,
+-		mnemonicTitle: localize({ key: 'miViewSCM', comment: ['&& denotes a mnemonic'] }, "Source &&Control"),
+-		keybindings: {
+-			primary: 0,
+-			win: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyG },
+-			linux: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyG },
+-			mac: { primary: KeyMod.WinCtrl | KeyMod.Shift | KeyCode.KeyG },
+-		},
+-		order: 2,
+-	}
++	when: ContextKeyExpr.not('config.horizon.scm.openCommand'),
++	containerIcon: sourceControlViewIcon
+ }], viewContainer);
+@@ -140,2 +142,3 @@ viewsRegistry.registerViews([{
+ 	when: ContextKeyExpr.and(
++		ContextKeyExpr.not('config.horizon.scm.openCommand'),
+ 		ContextKeyExpr.has('scm.historyProviderCount'),
+diff --git a/src/vs/workbench/workbench.common.main.ts b/src/vs/workbench/workbench.common.main.ts
+index b2aaf10f..a35f6ae9 100644
+--- a/src/vs/workbench/workbench.common.main.ts
++++ b/src/vs/workbench/workbench.common.main.ts
+@@ -288,2 +288,5 @@ import './contrib/scm/browser/scm.service.contribution.js';
+ 
++// Horizon (launcher view containers, activity bar defaults)
++import './contrib/horizon/browser/horizon.contribution.js';
++
+ // Debug

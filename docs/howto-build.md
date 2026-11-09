@@ -142,6 +142,12 @@ The script `dev/build.sh` provides several flags:
 - `-p`: generate the packages/assets/installers
 - `-s`: do not retrieve the source code of Visual Studio Code, it won't delete the existing build
 
+### Optional prebuilt built-in extensions
+
+`dev/build.sh` sources `dev/local.env` when it exists. That file is gitignored (via `*.env`) and is meant for machine-local settings.
+
+If `HORIZON_BUILTIN_EXTENSIONS_DIR` is set (for example `export HORIZON_BUILTIN_EXTENSIONS_DIR="/path/to/dir"` in `dev/local.env`), `prepare_vscode.sh` runs `install_builtin_extensions.sh`. It copies every direct subfolder of that directory that contains a `package.json` into `vscode/extensions/<subfolder>`, so the packager ships it as a built-in extension. `vscode/` is gitignored, so nothing is added to this repository. When the variable is unset, or the directory does not exist, the step does nothing.
+
 ## <a id="build-ci"></a>Build for CI/Downstream
 
 Here is the base script to build VSCodium:

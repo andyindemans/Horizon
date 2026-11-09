@@ -41,3 +41,51 @@ use the VSCodium-specific registry path.
 
 - [VSCodium issue #2714](https://github.com/VSCodium/vscodium/issues/2714)
 - [VSCodium/policy-watcher — RegistryPolicy.hh](https://github.com/VSCodium/policy-watcher/blob/main/src/windows/RegistryPolicy.hh)
+
+---
+
+## 90-horizon-ui
+
+**Launcher view containers, an SCM redirect setting and activity bar defaults**
+
+This patch is generic: it contains nothing that is specific to any one extension.
+
+### Launcher view containers (`order` and `command`)
+
+Built-in extensions (`extension.isBuiltin`) may set two extra fields on `contributes.viewsContainers.activitybar[]` entries:
+
+- `order` (number): overrides the automatic order that custom containers receive.
+- `command` (string): makes the container a *launcher*. It is registered with `hideIfEmpty: false` and `rejectAddedViews: true`, and carries the new `IViewContainerDescriptor.openCommand`.
+
+Extensions that are not built in ignore both fields, so marketplace extensions are unaffected.
+
+When a container with an `openCommand` is opened in the side bar, a workbench contribution (`contrib/horizon/browser/horizon.contribution.ts`) re-opens the last regular side bar container (Explorer if that one is itself a launcher), hides the side bar, and runs the command.
+
+### `horizon.scm.openCommand`
+
+A window-scoped, restricted string setting, empty by default. When it is non-empty:
+
+- The Source Control container behaves as a launcher for that command.
+- The built-in Source Control views (Repositories, Changes, Graph) are hidden through `when: !config.horizon.scm.openCommand`.
+- The Source Control container (not its Changes view) owns the `workbench.view.scm` command and Ctrl+Shift+G, so the keybinding, the View menu entry, the Command Palette and every `executeCommand('workbench.view.scm')` caller open the container; when `horizon.scm.openCommand` is set, the launcher redirect then runs that command.
+- `horizon.scm.openCommand` is a restricted setting: its value is a command ID and is ignored in untrusted workspaces. Trusted workspaces, user settings and built-in extension `configurationDefaults` can set it.
+- Known limitation: the Source Control open command and Ctrl+Shift+G now open the Source Control container. If the Changes view has been moved to another container, they open the Source Control container rather than revealing the moved view; use the view's own focus command instead.
+
+When it is empty, Source Control behaves as in stock VSCodium. A built-in extension can provide a default through `contributes.configurationDefaults`.
+
+Quick diff (gutter, overview ruler and minimap decorations) is unaffected. It depends on `IQuickDiffService` and the providers registered by the git extension, not on the Source Control views.
+
+### Activity bar defaults
+
+A one-time, per-profile contribution unpins Run and Debug, Testing and Remote Explorer from the activity bar. A profile storage marker (`horizon.activityBar.defaultsApplied`) prevents it from running again, so later user choices are kept.
+
+### Regenerating the patch
+
+`dev/patch.sh` is interactive. To regenerate without prompts:
+
+- Reset `vscode/` to its upstream HEAD (`git add -A && git reset -q --hard HEAD`).
+- Re-apply the current patch first: `git apply --ignore-whitespace ../patches/90-horizon-ui.patch`.
+- Edit, then `git add -A && git diff --staged -U1 > ../patches/90-horizon-ui.patch`, then reset again.
+- Verify that every patch applies in order with `bash dev/check-patches.sh`.
+
+Files touched: `src/vs/workbench/common/views.ts`, `src/vs/workbench/api/browser/viewsExtensionPoint.ts`, `src/vs/workbench/contrib/scm/browser/scm.contribution.ts`, `src/vs/workbench/workbench.common.main.ts`, and the new `src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts`.

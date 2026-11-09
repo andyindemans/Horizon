@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Horizon IDE logo</title>
+  <defs>
+    <radialGradient id="sunGlow" gradientUnits="userSpaceOnUse" cx="512" cy="240" r="280">
+      <stop offset="0" stop-color="#F7B8D9" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#F7B8D9" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sunGrad" gradientUnits="userSpaceOnUse" cx="512" cy="220" r="200">
+      <stop offset="0" stop-color="#F9A8CB"/>
+      <stop offset="0.55" stop-color="#E86FA6"/>
+      <stop offset="1" stop-color="#C13FA5"/>
+    </radialGradient>
+    <linearGradient id="topGrad" x1="252" y1="150" x2="772" y2="450" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C2409D"/>
+      <stop offset="1" stop-color="#A430B9"/>
+    </linearGradient>
+    <linearGradient id="rightGrad" x1="512" y1="300" x2="772" y2="750" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DE4E87"/>
+      <stop offset="1" stop-color="#A430B9"/>
+    </linearGradient>
+    <linearGradient id="leftGrad" x1="252" y1="300" x2="512" y2="750" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#952CC1"/>
+      <stop offset="1" stop-color="#5B1D8F"/>
+    </linearGradient>
+    <linearGradient id="wordGrad" x1="0" y1="850" x2="0" y2="940" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#BB3EA8"/>
+      <stop offset="1" stop-color="#8929C5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- soft glow behind the rising sun -->
+  <circle cx="512" cy="240" r="280" fill="url(#sunGlow)"/>
+
+  <!-- sun rising behind the summit: the horizon line -->
+  <circle cx="512" cy="240" r="170" fill="url(#sunGrad)"/>
+
+  <!-- ground shadow -->
+  <ellipse cx="512" cy="772" rx="270" ry="34" fill="#3B1470" opacity="0.18"/>
+
+  <!-- isometric monolith, three gradient faces -->
+  <polygon points="252,300 512,450 512,750 252,600" fill="url(#leftGrad)"/>
+  <polygon points="512,450 772,300 772,600 512,750" fill="url(#rightGrad)"/>
+  <polygon points="512,150 772,300 512,450 252,300" fill="url(#topGrad)"/>
+
+  <!-- rim light along the ridge where sun meets horizon -->
+  <path d="M252 300 L512 150 L772 300" fill="none" stroke="#FFC1DE" stroke-width="6" stroke-opacity="0.85" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- meridian accent lines on the side faces -->
+  <path d="M512 520 L772 370" stroke="#F2A6CE" stroke-width="3" stroke-opacity="0.4"/>
+  <path d="M512 590 L772 440" stroke="#F2A6CE" stroke-width="3" stroke-opacity="0.28"/>
+  <path d="M512 520 L252 370" stroke="#CDA7EE" stroke-width="3" stroke-opacity="0.35"/>
+  <path d="M512 590 L252 440" stroke="#CDA7EE" stroke-width="3" stroke-opacity="0.25"/>
+
+</svg>
