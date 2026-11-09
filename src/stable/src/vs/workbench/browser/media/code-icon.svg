@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="112 38 800 800">
   <title>Horizon IDE logo</title>
   <defs>
-    <radialGradient id="sunGlow" gradientUnits="userSpaceOnUse" cx="512" cy="240" r="280">
+    <radialGradient id="sunGlow" gradientUnits="userSpaceOnUse" cx="512" cy="240" r="220">
       <stop offset="0" stop-color="#F7B8D9" stop-opacity="0.35"/>
       <stop offset="1" stop-color="#F7B8D9" stop-opacity="0"/>
     </radialGradient>
@@ -22,14 +22,10 @@
       <stop offset="0" stop-color="#952CC1"/>
       <stop offset="1" stop-color="#5B1D8F"/>
     </linearGradient>
-    <linearGradient id="wordGrad" x1="0" y1="850" x2="0" y2="940" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#BB3EA8"/>
-      <stop offset="1" stop-color="#8929C5"/>
-    </linearGradient>
   </defs>
 
   <!-- soft glow behind the rising sun -->
-  <circle cx="512" cy="240" r="280" fill="url(#sunGlow)"/>
+  <circle cx="512" cy="240" r="220" fill="url(#sunGlow)"/>
 
   <!-- sun rising behind the summit: the horizon line -->
   <circle cx="512" cy="240" r="170" fill="url(#sunGrad)"/>

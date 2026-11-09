@@ -42,10 +42,10 @@ index 72f44dea..0fcdc920 100644
  	/**
 diff --git a/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
 new file mode 100644
-index 00000000..b2912fef
+index 00000000..68bde10f
 --- /dev/null
 +++ b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,153 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Horizon. All rights reserved.
 + *  Licensed under the MIT License.
@@ -66,6 +66,7 @@ index 00000000..b2912fef
 +import { Disposable } from '../../../../base/common/lifecycle.js';
 +import { disposableTimeout } from '../../../../base/common/async.js';
 +import { VIEWLET_ID as SCM_VIEWLET_ID } from '../../scm/common/scm.js';
++import './horizonScreens.js';
 +
 +const EXPLORER_CONTAINER_ID = 'workbench.view.explorer';
 +const SCM_OPEN_COMMAND_SETTING = 'horizon.scm.openCommand';
@@ -198,6 +199,440 @@ index 00000000..b2912fef
 +
 +registerWorkbenchContribution2(HorizonLauncherContribution.ID, HorizonLauncherContribution, WorkbenchPhase.AfterRestored);
 +registerWorkbenchContribution2(HorizonActivityBarDefaultsContribution.ID, HorizonActivityBarDefaultsContribution, WorkbenchPhase.BlockStartup);
+diff --git a/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts b/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts
+new file mode 100644
+index 00000000..e7c3b486
+--- /dev/null
++++ b/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts
+@@ -0,0 +1,399 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Horizon. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import './media/horizonScreens.css';
++import { localize, localize2 } from '../../../../nls.js';
++import { $, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
++import { mainWindow } from '../../../../base/browser/window.js';
++import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
++import { onUnexpectedError } from '../../../../base/common/errors.js';
++import { Emitter } from '../../../../base/common/event.js';
++import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
++import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
++import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
++import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
++import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
++import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
++import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
++import { createDecorator, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
++import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
++import { ILogService } from '../../../../platform/log/common/log.js';
++import { INotificationService } from '../../../../platform/notification/common/notification.js';
++import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
++import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
++import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
++import { IEditorService } from '../../../services/editor/common/editorService.js';
++import { IExtensionService } from '../../../services/extensions/common/extensions.js';
++import { ExtensionsRegistry } from '../../../services/extensions/common/extensionsRegistry.js';
++import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
++import { ExtensionKeyedWebviewOriginStore, IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../webview/browser/webview.js';
++import { WebviewWindowDragMonitor } from '../../webview/browser/webviewWindowDragMonitor.js';
++import { IWebviewViewService, WebviewView } from '../../webviewView/browser/webviewViewService.js';
++
++export const SHOW_SCREEN_COMMAND_ID = 'horizon.workbench.showScreen';
++export const CLOSE_SCREEN_COMMAND_ID = 'horizon.workbench.closeScreen';
++const ACTIVE_SCREEN_STORAGE_KEY = 'horizon.screens.active';
++
++export const ActiveScreenContext = new RawContextKey<string>('horizonActiveScreen', '', localize('horizonActiveScreen', "Id of the editor-area screen that is shown, or empty when none is shown."));
++
++interface IScreenContribution {
++	readonly id: string;
++	readonly title: string;
++}
++
++interface IScreenDescriptor {
++	readonly id: string;
++	readonly title: string;
++	readonly extensionId: ExtensionIdentifier;
++}
++
++interface IScreenEntry {
++	readonly descriptor: IScreenDescriptor;
++	readonly webview: IOverlayWebview;
++	readonly onDidChangeVisibility: Emitter<boolean>;
++	readonly onDispose: Emitter<void>;
++	readonly cts: CancellationTokenSource;
++	readonly disposables: DisposableStore;
++	resolved: boolean;
++}
++
++const screensExtensionPoint = ExtensionsRegistry.registerExtensionPoint<IScreenContribution[]>({
++	extensionPoint: 'horizonScreens',
++	jsonSchema: {
++		description: localize('horizonScreens', "Built-in extensions only: webview views shown over the whole editor area, without a tab. Register the view with window.registerWebviewViewProvider and show it with the horizon.workbench.showScreen command."),
++		type: 'array',
++		items: {
++			type: 'object',
++			required: ['id', 'title'],
++			properties: {
++				id: { type: 'string', description: localize('horizonScreens.id', "Id of the webview view that renders the screen.") },
++				title: { type: 'string', description: localize('horizonScreens.title', "Title of the screen, used for accessibility.") }
++			}
++		}
++	},
++	activationEventsGenerator: function* (contributions: readonly IScreenContribution[]) {
++		for (const contribution of contributions) {
++			if (typeof contribution.id === 'string') {
++				yield `onView:${contribution.id}`;
++			}
++		}
++	}
++});
++
++export const IHorizonScreenService = createDecorator<IHorizonScreenService>('horizonScreenService');
++
++export interface IHorizonScreenService {
++	readonly _serviceBrand: undefined;
++	readonly activeScreen: string | undefined;
++	has(id: string): boolean;
++	show(id: string, options?: { readonly preserveFocus?: boolean }): Promise<void>;
++	hide(): void;
++}
++
++class HorizonScreenService extends Disposable implements IHorizonScreenService {
++
++	declare readonly _serviceBrand: undefined;
++
++	private readonly descriptors = new Map<string, IScreenDescriptor>();
++	private readonly entries = new Map<string, IScreenEntry>();
++	private readonly originStore: ExtensionKeyedWebviewOriginStore;
++	private readonly activeScreenContext: IContextKey<string>;
++	private host: HTMLElement | undefined;
++	private active: IScreenEntry | undefined;
++
++	constructor(
++		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
++		@IEditorService editorService: IEditorService,
++		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService,
++		@IWebviewService private readonly webviewService: IWebviewService,
++		@IWebviewViewService private readonly webviewViewService: IWebviewViewService,
++		@IExtensionService private readonly extensionService: IExtensionService,
++		@IStorageService private readonly storageService: IStorageService,
++		@IContextKeyService contextKeyService: IContextKeyService,
++		@INotificationService private readonly notificationService: INotificationService,
++		@ILogService private readonly logService: ILogService,
++	) {
++		super();
++
++		this.originStore = new ExtensionKeyedWebviewOriginStore('horizonScreens.origins', storageService);
++		this.activeScreenContext = ActiveScreenContext.bindTo(contextKeyService);
++
++		this._register(screensExtensionPoint.setHandler((_extensions, delta) => {
++			for (const { description, value, collector } of delta.added) {
++				if (!description.isBuiltin) {
++					collector.warn(localize('horizonScreens.builtinOnly', "'horizonScreens' is only supported for built-in extensions and is ignored."));
++					continue;
++				}
++				if (!Array.isArray(value)) {
++					collector.error(localize('horizonScreens.array', "'horizonScreens' must be an array."));
++					continue;
++				}
++				for (const item of value) {
++					if (typeof item?.id !== 'string' || typeof item?.title !== 'string') {
++						collector.error(localize('horizonScreens.item', "Each 'horizonScreens' entry needs a string 'id' and 'title'."));
++						continue;
++					}
++					this.descriptors.set(item.id, { id: item.id, title: item.title, extensionId: description.identifier });
++				}
++			}
++			for (const { value } of delta.removed) {
++				if (!Array.isArray(value)) {
++					continue;
++				}
++				for (const item of value) {
++					if (typeof item?.id === 'string') {
++						this.removeEntry(item.id, true);
++						this.descriptors.delete(item.id);
++					}
++				}
++			}
++		}));
++
++		// An editor opening in the main editor area replaces the screen.
++		this.editorGroupService.whenRestored.then(() => {
++			this._register(editorService.onWillOpenEditor(e => {
++				if (this.active && this.editorGroupService.mainPart.getGroup(e.groupId)) {
++					this.hide();
++				}
++			}));
++		});
++
++		// Follow the visibility of the editor part (for example a maximized panel).
++		this._register(this.layoutService.onDidChangePartVisibility(e => {
++			if (e.partId !== Parts.EDITOR_PART || !this.active) {
++				return;
++			}
++			if (e.visible) {
++				this.attach(this.active);
++			} else {
++				this.active.webview.release(this);
++			}
++		}));
++	}
++
++	get activeScreen(): string | undefined {
++		return this.active?.descriptor.id;
++	}
++
++	has(id: string): boolean {
++		return this.descriptors.has(id);
++	}
++
++	async show(id: string, options?: { readonly preserveFocus?: boolean }): Promise<void> {
++		const descriptor = this.descriptors.get(id);
++		if (!descriptor) {
++			throw new Error(`No editor-area screen is registered with id '${id}'.`);
++		}
++
++		if (this.active && this.active.descriptor.id !== id) {
++			this.hide();
++		}
++
++		if (!this.layoutService.isVisible(Parts.EDITOR_PART, mainWindow)) {
++			this.layoutService.setPartHidden(false, Parts.EDITOR_PART);
++		}
++		if (this.layoutService.isVisible(Parts.SIDEBAR_PART)) {
++			this.layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
++		}
++
++		let entry = this.entries.get(id);
++		if (!entry) {
++			entry = this.createEntry(descriptor);
++			this.entries.set(id, entry);
++		}
++
++		const wasActive = this.active === entry;
++		this.active = entry;
++		this.attach(entry);
++		this.activeScreenContext.set(id);
++		this.storageService.store(ACTIVE_SCREEN_STORAGE_KEY, id, StorageScope.WORKSPACE, StorageTarget.MACHINE);
++
++		if (!wasActive) {
++			entry.onDidChangeVisibility.fire(true);
++		}
++
++		if (!entry.resolved) {
++			entry.resolved = true;
++			const resolving = entry;
++			this.resolve(resolving).catch(err => {
++				resolving.resolved = false;
++				this.logService.error(err);
++				this.notificationService.error(localize('horizonScreens.resolveFailed', "Could not open {0}: {1}", resolving.descriptor.title, String(err)));
++			});
++		}
++
++		if (!options?.preserveFocus) {
++			entry.webview.focus();
++		}
++	}
++
++	hide(): void {
++		this.deactivate(true);
++	}
++
++	private deactivate(updateStorage: boolean): void {
++		const entry = this.active;
++		if (!entry) {
++			return;
++		}
++
++		this.active = undefined;
++		entry.webview.release(this);
++		this.host?.parentElement?.classList.remove('horizon-screen-visible');
++		this.activeScreenContext.reset();
++		if (updateStorage) {
++			this.storageService.remove(ACTIVE_SCREEN_STORAGE_KEY, StorageScope.WORKSPACE);
++		}
++		entry.onDidChangeVisibility.fire(false);
++	}
++
++	private getHost(): HTMLElement {
++		if (!this.host) {
++			const part = this.layoutService.getContainer(mainWindow, Parts.EDITOR_PART);
++			if (!part) {
++				throw new Error('The editor part is not available.');
++			}
++			const host = part.appendChild($('.horizon-screen'));
++			host.tabIndex = 0;
++			host.setAttribute('role', 'document');
++			this._register(addDisposableListener(host, EventType.FOCUS, () => this.active?.webview.focus()));
++			this.host = host;
++		}
++		return this.host;
++	}
++
++	private attach(entry: IScreenEntry): void {
++		const host = this.getHost();
++		host.setAttribute('aria-label', entry.descriptor.title);
++		host.parentElement?.classList.add('horizon-screen-visible');
++		entry.webview.claim(this, mainWindow, undefined);
++		entry.webview.setAnchorElement(host);
++	}
++
++	private createEntry(descriptor: IScreenDescriptor): IScreenEntry {
++		const disposables = new DisposableStore();
++		const webview = disposables.add(this.webviewService.createWebviewOverlay({
++			origin: this.originStore.getOrigin(descriptor.id, descriptor.extensionId),
++			providedViewType: descriptor.id,
++			title: descriptor.title,
++			options: { purpose: WebviewContentPurpose.WebviewView },
++			contentOptions: {},
++			extension: { id: descriptor.extensionId },
++		}));
++		const cts = new CancellationTokenSource();
++		disposables.add(toDisposable(() => cts.dispose(true)));
++		const entry: IScreenEntry = {
++			descriptor,
++			webview,
++			onDidChangeVisibility: disposables.add(new Emitter<boolean>()),
++			onDispose: disposables.add(new Emitter<void>()),
++			cts,
++			disposables,
++			resolved: false,
++		};
++		disposables.add(new WebviewWindowDragMonitor(mainWindow, () => entry.webview));
++		return entry;
++	}
++
++	private async resolve(entry: IScreenEntry): Promise<void> {
++		await this.extensionService.activateByEvent(`onView:${entry.descriptor.id}`);
++
++		const webviewView: WebviewView = {
++			webview: entry.webview,
++			onDidChangeVisibility: entry.onDidChangeVisibility.event,
++			onDispose: entry.onDispose.event,
++			title: entry.descriptor.title,
++			description: undefined,
++			badge: undefined,
++			dispose: () => this.removeEntry(entry.descriptor.id, true),
++			show: preserveFocus => {
++				this.show(entry.descriptor.id, { preserveFocus }).catch(onUnexpectedError);
++			},
++		};
++
++		await this.webviewViewService.resolve(entry.descriptor.id, webviewView, entry.cts.token);
++	}
++
++	private removeEntry(id: string, updateStorage: boolean): void {
++		const entry = this.entries.get(id);
++		if (!entry) {
++			return;
++		}
++		if (this.active === entry) {
++			this.deactivate(updateStorage);
++		}
++		this.entries.delete(id);
++		entry.onDispose.fire();
++		entry.disposables.dispose();
++	}
++
++	override dispose(): void {
++		for (const id of [...this.entries.keys()]) {
++			this.removeEntry(id, false); // keep the stored screen so it is restored after a reload
++		}
++		this.host?.remove();
++		super.dispose();
++	}
++}
++
++CommandsRegistry.registerCommand(SHOW_SCREEN_COMMAND_ID, (accessor: ServicesAccessor, id: unknown, options?: unknown) => {
++	if (typeof id !== 'string') {
++		throw new Error(`${SHOW_SCREEN_COMMAND_ID}: expected a screen id.`);
++	}
++	const preserveFocus = typeof options === 'object' && options !== null && (options as { preserveFocus?: unknown }).preserveFocus === true;
++	return accessor.get(IHorizonScreenService).show(id, { preserveFocus });
++});
++
++registerAction2(class extends Action2 {
++	constructor() {
++		super({
++			id: CLOSE_SCREEN_COMMAND_ID,
++			title: localize2('horizonScreens.close', "Close Screen"),
++			category: localize2('horizonScreens.category', "Horizon"),
++			f1: true,
++			precondition: ActiveScreenContext.notEqualsTo(''),
++			keybinding: {
++				weight: KeybindingWeight.WorkbenchContrib + 1,
++				when: ActiveScreenContext.notEqualsTo(''),
++				primary: KeyMod.CtrlCmd | KeyCode.KeyW,
++				win: { primary: KeyMod.CtrlCmd | KeyCode.F4, secondary: [KeyMod.CtrlCmd | KeyCode.KeyW] }
++			}
++		});
++	}
++
++	run(accessor: ServicesAccessor): void {
++		accessor.get(IHorizonScreenService).hide();
++		accessor.get(IEditorGroupsService).mainPart.activeGroup.focus();
++	}
++});
++
++class HorizonScreenRestoreContribution implements IWorkbenchContribution {
++
++	static readonly ID = 'workbench.contrib.horizonScreenRestore';
++
++	constructor(
++		@IHorizonScreenService screenService: IHorizonScreenService,
++		@IStorageService storageService: IStorageService,
++		@IExtensionService extensionService: IExtensionService,
++		@IEditorGroupsService editorGroupService: IEditorGroupsService,
++		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
++	) {
++		const id = storageService.get(ACTIVE_SCREEN_STORAGE_KEY, StorageScope.WORKSPACE);
++		if (!id) {
++			return;
++		}
++
++		Promise.all([editorGroupService.whenRestored, extensionService.whenInstalledExtensionsRegistered()]).then(() => {
++			if (screenService.activeScreen === undefined && screenService.has(id) && !layoutService.isVisible(Parts.SIDEBAR_PART)) {
++				return screenService.show(id, { preserveFocus: true });
++			}
++			storageService.remove(ACTIVE_SCREEN_STORAGE_KEY, StorageScope.WORKSPACE);
++			return undefined;
++		}).catch(onUnexpectedError);
++	}
++}
++
++registerSingleton(IHorizonScreenService, HorizonScreenService, InstantiationType.Delayed);
++registerWorkbenchContribution2(HorizonScreenRestoreContribution.ID, HorizonScreenRestoreContribution, WorkbenchPhase.AfterRestored);
+diff --git a/src/vs/workbench/contrib/horizon/browser/media/horizonScreens.css b/src/vs/workbench/contrib/horizon/browser/media/horizonScreens.css
+new file mode 100644
+index 00000000..3da7c915
+--- /dev/null
++++ b/src/vs/workbench/contrib/horizon/browser/media/horizonScreens.css
+@@ -0,0 +1,23 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Horizon. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++.monaco-workbench .part.editor > .horizon-screen {
++	position: absolute;
++	top: 0;
++	left: 0;
++	width: 100%;
++	height: 100%;
++	display: none;
++	background-color: var(--vscode-editor-background);
++	outline: none;
++}
++
++.monaco-workbench .part.editor.horizon-screen-visible > .horizon-screen {
++	display: block;
++}
++
++.monaco-workbench .part.editor.horizon-screen-visible > .content {
++	visibility: hidden;
++}
 diff --git a/src/vs/workbench/contrib/scm/browser/scm.contribution.ts b/src/vs/workbench/contrib/scm/browser/scm.contribution.ts
 index 22920b5f..9cb02084 100644
 --- a/src/vs/workbench/contrib/scm/browser/scm.contribution.ts

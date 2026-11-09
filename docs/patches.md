@@ -46,7 +46,7 @@ use the VSCodium-specific registry path.
 
 ## 90-horizon-ui
 
-**Launcher view containers, an SCM redirect setting and activity bar defaults**
+**Launcher view containers, an SCM redirect setting, editor-area screens and activity bar defaults**
 
 This patch is generic: it contains nothing that is specific to any one extension.
 
@@ -75,6 +75,15 @@ When it is empty, Source Control behaves as in stock VSCodium. A built-in extens
 
 Quick diff (gutter, overview ruler and minimap decorations) is unaffected. It depends on `IQuickDiffService` and the providers registered by the git extension, not on the Source Control views.
 
+### Editor-area screens (`horizonScreens`)
+
+- Built-in extensions may declare `contributes.horizonScreens`: an array of `{ "id": string, "title": string }`, where each `id` is a webview view the extension registers with `window.registerWebviewViewProvider`. Other extensions are ignored with a warning.
+- `horizon.workbench.showScreen` (arguments: the screen id, optionally `{ preserveFocus: boolean }`) shows that webview over the whole main editor area, without a tab or header. It hides the side bar, and the editor groups underneath are hidden but kept.
+- The screen closes when an editor opens in the main editor area, or with **Horizon: Close Screen** (Ctrl+W / Ctrl+F4 while a screen is shown). No editor is closed.
+- The side bar, panel and secondary side bar can be shown next to a screen. One screen is shown at a time, and hidden screens keep their webview for the session.
+- The shown screen is restored after a window reload when the side bar is hidden. The context key `horizonActiveScreen` holds its id (empty when none is shown).
+- `onView:<id>` activation events are generated from the contribution.
+
 ### Activity bar defaults
 
 A one-time, per-profile contribution unpins Run and Debug, Testing and Remote Explorer from the activity bar. A profile storage marker (`horizon.activityBar.defaultsApplied`) prevents it from running again, so later user choices are kept.
@@ -88,4 +97,4 @@ A one-time, per-profile contribution unpins Run and Debug, Testing and Remote Ex
 - Edit, then `git add -A && git diff --staged -U1 > ../patches/90-horizon-ui.patch`, then reset again.
 - Verify that every patch applies in order with `bash dev/check-patches.sh`.
 
-Files touched: `src/vs/workbench/common/views.ts`, `src/vs/workbench/api/browser/viewsExtensionPoint.ts`, `src/vs/workbench/contrib/scm/browser/scm.contribution.ts`, `src/vs/workbench/workbench.common.main.ts`, and the new `src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts`.
+Files touched: `src/vs/workbench/common/views.ts`, `src/vs/workbench/api/browser/viewsExtensionPoint.ts`, `src/vs/workbench/contrib/scm/browser/scm.contribution.ts`, `src/vs/workbench/workbench.common.main.ts`, the new `src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts`, the new `src/vs/workbench/contrib/horizon/browser/horizonScreens.ts` and the new `src/vs/workbench/contrib/horizon/browser/media/horizonScreens.css`.

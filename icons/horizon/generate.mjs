@@ -239,9 +239,9 @@ writeFileSync(out('resources', 'server', 'code-512.png'), await resized(512));
 // workbench
 copyFileSync(markPath, out('src', 'vs', 'workbench', 'browser', 'media', 'code-icon.svg'));
 
-// letterpress watermarks (40x40, viewBox 1024)
+// letterpress watermarks (40x40, viewBox cropped to the glyph)
 const letterpress = (id, fill, groupOpacity) => `<?xml version="1.0" encoding="UTF-8"?>
-<svg version="1.1" xmlns="http://www.w3.org/2000/svg" x="0" y="0" width="40" height="40" viewBox="0 0 1024 1024">
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" x="0" y="0" width="40" height="40" viewBox="152 50 720 720">
   <g id="${id}" fill="${fill}"${groupOpacity === 1 ? '' : ` opacity="${groupOpacity}"`}>
     <circle cx="512" cy="240" r="170" opacity="0.7"/>
     <polygon points="512,150 772,300 512,450 252,300" opacity="0.55"/>
