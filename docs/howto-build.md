@@ -95,9 +95,9 @@ The build scripts are written in Bash, so on Windows you must run them inside **
 
 #### Optional tools
 
-- **WiX Toolset v3** _(only needed for `.msi` installer packaging, i.e., the `-p` flag)_:
+- **WiX Toolset v3** _(only for `.msi` packaging, which `dev/build.sh` skips by default)_:
 
-   Download from [wixtoolset.org](https://wixtoolset.org/releases/) and ensure `candle.exe` / `light.exe` are on your `PATH`.
+   The MSI templates in `build/windows/msi/` are still VSCodium-branded (product name, UpgradeCode, registry keys), so `dev/build.sh` sets `SHOULD_BUILD_MSI=no` and `SHOULD_BUILD_MSI_NOUP=no` unless they are already set. Building the MSI needs WiX v3 with the `WIX` environment variable set and the Windows 10 SDK `10.0.17763.0`.
 
 #### PATH verification
 
@@ -147,6 +147,25 @@ The script `dev/build.sh` provides several flags:
 `dev/build.sh` sources `dev/local.env` when it exists. That file is gitignored (via `*.env`) and is meant for machine-local settings.
 
 If `HORIZON_BUILTIN_EXTENSIONS_DIR` is set (for example `export HORIZON_BUILTIN_EXTENSIONS_DIR="/path/to/dir"` in `dev/local.env`), `prepare_vscode.sh` runs `install_builtin_extensions.sh`. It copies every direct subfolder of that directory that contains a `package.json` into `vscode/extensions/<subfolder>`, so the packager ships it as a built-in extension. `vscode/` is gitignored, so nothing is added to this repository. When the variable is unset, or the directory does not exist, the step does nothing.
+
+### Windows installer
+
+`-p` packages the build into `assets/`:
+
+- `HorizonUserSetup-x64-<version>.exe`: per-user installer, no admin rights, installs to `%LOCALAPPDATA%\Programs\Horizon`
+- `HorizonSetup-x64-<version>.exe`: system-wide installer, needs admin rights, installs to `C:\Program Files\Horizon`
+- `Horizon-win32-x64-<version>.zip`: portable archive (needs 7-Zip on `PATH`)
+- `horizon-cli-win32-x64-<version>.tar.gz`: standalone CLI
+
+Run from the repo root in Git Bash:
+
+- `./dev/build.sh -p`: fresh clone, build, then package
+- `./dev/build.sh -s -p`: rebuild from the existing `vscode/`, then package
+- `./dev/build.sh -s -o -p`: package the existing `VSCode-win32-x64/` without rebuilding. Always combine `-o` with `-s`, because without `-s` the script first deletes `vscode/` and `VSCode-win32-x64/`.
+
+`dev/build.sh` skips the MSI and the REH servers unless `SHOULD_BUILD_MSI`, `SHOULD_BUILD_MSI_NOUP`, `SHOULD_BUILD_REH` or `SHOULD_BUILD_REH_WEB` is set. The installers are not code-signed, so SmartScreen asks for confirmation (**More info** → **Run anyway**). In-app updates are disabled for local builds: to upgrade, run a newer installer over the existing installation.
+
+Installers include the extensions copied from `HORIZON_BUILTIN_EXTENSIONS_DIR`. Do not publish installers that contain private extensions.
 
 ## <a id="build-ci"></a>Build for CI/Downstream
 
