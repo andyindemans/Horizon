@@ -42,10 +42,10 @@ index 72f44dea..0fcdc920 100644
  	/**
 diff --git a/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
 new file mode 100644
-index 00000000..90b7ed36
+index 00000000..87976f1e
 --- /dev/null
 +++ b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,190 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Horizon. All rights reserved.
 + *  Licensed under the MIT License.
@@ -65,6 +65,7 @@ index 00000000..90b7ed36
 +import { ILogService } from '../../../../platform/log/common/log.js';
 +import { Disposable } from '../../../../base/common/lifecycle.js';
 +import { disposableTimeout } from '../../../../base/common/async.js';
++import { mainWindow } from '../../../../base/browser/window.js';
 +import { VIEWLET_ID as SCM_VIEWLET_ID } from '../../scm/common/scm.js';
 +import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 +import { IHorizonScreenService } from './horizonScreens.js';
@@ -94,7 +95,9 @@ index 00000000..90b7ed36
 +	static readonly ID = 'workbench.contrib.horizonLaunchers';
 +
 +	private lastSidebarId: string;
-+	private redirecting = false;
++	private redirecting = false; // a launcher redirect, including its command, is running
++	private openingTarget = false; // the redirect is re-opening the regular side bar container
++	private pendingRedirect: { readonly id: string; readonly command: string } | undefined; // the latest launcher opened meanwhile
 +
 +	constructor(
 +		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
@@ -123,7 +126,8 @@ index 00000000..90b7ed36
 +				disposableTimeout(() => void this.redirect(id, command), 0, this._store);
 +			} else {
 +				this.lastSidebarId = id;
-+				if (!this.redirecting) {
++				if (!this.openingTarget && !this.screenService.isChangingLayout) {
++					this.pendingRedirect = undefined; // the user navigated: a queued launcher no longer applies
 +					this.closeScreenForSidebar(); // the user opened a regular side bar view
 +				}
 +			}
@@ -153,20 +157,29 @@ index 00000000..90b7ed36
 +
 +		// A screen and the side bar are never shown together: close the screen so the editors return.
 +		this.screenService.hide();
-+		if (!this.layoutService.hasFocus(Parts.SIDEBAR_PART)) {
++
++		// Focus was in the (now hidden) screen unless a part kept it; only then move it to the editors, and only if they are shown.
++		const focusKept = this.layoutService.hasFocus(Parts.SIDEBAR_PART) || this.layoutService.hasFocus(Parts.PANEL_PART) || this.layoutService.hasFocus(Parts.AUXILIARYBAR_PART);
++		if (!focusKept && this.layoutService.isVisible(Parts.EDITOR_PART, mainWindow)) {
 +			this.editorGroupService.mainPart.activeGroup.focus();
 +		}
 +	}
 +
 +	private async redirect(id: string, command: string): Promise<void> {
 +		if (this.redirecting) {
++			this.pendingRedirect = { id, command }; // never two launcher commands at once: run the latest one afterwards
 +			return;
 +		}
 +
 +		this.redirecting = true;
 +		try {
 +			const target = this.getCommand(this.lastSidebarId) ? EXPLORER_CONTAINER_ID : this.lastSidebarId; // never re-open a launcher
-+			await this.paneCompositeService.openPaneComposite(target, ViewContainerLocation.Sidebar, false);
++			this.openingTarget = true;
++			try {
++				await this.paneCompositeService.openPaneComposite(target, ViewContainerLocation.Sidebar, false);
++			} finally {
++				this.openingTarget = false;
++			}
 +			this.layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
 +			await this.commandService.executeCommand(command);
 +		} catch (err) {
@@ -175,6 +188,12 @@ index 00000000..90b7ed36
 +			this.notificationService.error(localize('horizon.launcherFailed', "Could not open {0}: {1}", title, String(err)));
 +		} finally {
 +			this.redirecting = false;
++		}
++
++		const next = this.pendingRedirect;
++		this.pendingRedirect = undefined;
++		if (next && !this._store.isDisposed) {
++			await this.redirect(next.id, next.command);
 +		}
 +	}
 +}
@@ -219,10 +238,10 @@ index 00000000..90b7ed36
 +registerWorkbenchContribution2(HorizonActivityBarDefaultsContribution.ID, HorizonActivityBarDefaultsContribution, WorkbenchPhase.BlockStartup);
 diff --git a/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts b/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts
 new file mode 100644
-index 00000000..17d44574
+index 00000000..34219c57
 --- /dev/null
 +++ b/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,485 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Horizon. All rights reserved.
 + *  Licensed under the MIT License.
@@ -316,6 +335,8 @@ index 00000000..17d44574
 +export interface IHorizonScreenService {
 +	readonly _serviceBrand: undefined;
 +	readonly activeScreen: string | undefined;
++	/** True while the screen host itself changes the layout (editor area, side bar); side bar events then are not user navigation. */
++	readonly isChangingLayout: boolean;
 +	has(id: string): boolean;
 +	show(id: string, options?: { readonly preserveFocus?: boolean }): Promise<void>;
 +	hide(): void;
@@ -332,6 +353,7 @@ index 00000000..17d44574
 +	private host: HTMLElement | undefined;
 +	private active: IScreenEntry | undefined;
 +	private suspended = false; // the editor part is hidden (for example a maximized panel) while a screen is active
++	private changingLayout = false;
 +
 +	constructor(
 +		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
@@ -408,6 +430,10 @@ index 00000000..17d44574
 +		return this.active?.descriptor.id;
 +	}
 +
++	get isChangingLayout(): boolean {
++		return this.changingLayout;
++	}
++
 +	has(id: string): boolean {
 +		return this.descriptors.has(id);
 +	}
@@ -422,11 +448,21 @@ index 00000000..17d44574
 +			this.hide();
 +		}
 +
-+		if (!this.layoutService.isVisible(Parts.EDITOR_PART, mainWindow)) {
-+			this.layoutService.setPartHidden(false, Parts.EDITOR_PART);
-+		}
-+		if (this.layoutService.isVisible(Parts.SIDEBAR_PART)) {
-+			this.layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
++		// Side bar events caused by these layout changes are not user navigation (see isChangingLayout).
++		this.changingLayout = true;
++		try {
++			if (!this.layoutService.isVisible(Parts.EDITOR_PART, mainWindow)) {
++				if (this.layoutService.isPanelMaximized()) {
++					this.layoutService.toggleMaximizedPanel(); // restores the panel's size and forgets "maximized"
++				} else {
++					this.layoutService.setPartHidden(false, Parts.EDITOR_PART); // also leaves a maximized secondary side bar
++				}
++			}
++			if (this.layoutService.isVisible(Parts.SIDEBAR_PART)) {
++				this.layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
++			}
++		} finally {
++			this.changingLayout = false;
 +		}
 +
 +		let entry = this.entries.get(id);
@@ -625,29 +661,67 @@ index 00000000..17d44574
 +	}
 +});
 +
-+class HorizonScreenRestoreContribution implements IWorkbenchContribution {
++class HorizonScreenRestoreContribution extends Disposable implements IWorkbenchContribution {
 +
 +	static readonly ID = 'workbench.contrib.horizonScreenRestore';
 +
 +	constructor(
-+		@IHorizonScreenService screenService: IHorizonScreenService,
-+		@IStorageService storageService: IStorageService,
++		@IHorizonScreenService private readonly screenService: IHorizonScreenService,
++		@IStorageService private readonly storageService: IStorageService,
 +		@IExtensionService extensionService: IExtensionService,
-+		@IEditorGroupsService editorGroupService: IEditorGroupsService,
-+		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
++		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService,
++		@IEditorService private readonly editorService: IEditorService,
++		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 +	) {
++		super();
++
 +		const id = storageService.get(ACTIVE_SCREEN_STORAGE_KEY, StorageScope.WORKSPACE);
 +		if (!id) {
 +			return;
 +		}
 +
 +		Promise.all([editorGroupService.whenRestored, extensionService.whenInstalledExtensionsRegistered()]).then(() => {
-+			if (screenService.activeScreen === undefined && screenService.has(id) && !layoutService.isVisible(Parts.SIDEBAR_PART)) {
-+				return screenService.show(id, { preserveFocus: true });
++			if (!this.canRestore(id)) {
++				this.forget();
++				return undefined;
 +			}
-+			storageService.remove(ACTIVE_SCREEN_STORAGE_KEY, StorageScope.WORKSPACE);
++			if (this.layoutService.isVisible(Parts.EDITOR_PART, mainWindow)) {
++				return this.screenService.show(id, { preserveFocus: true });
++			}
++			this.restoreWithEditorArea(id);
 +			return undefined;
 +		}).catch(onUnexpectedError);
++	}
++
++	private canRestore(id: string): boolean {
++		return this.screenService.activeScreen === undefined && this.screenService.has(id) && !this.layoutService.isVisible(Parts.SIDEBAR_PART);
++	}
++
++	private forget(): void {
++		this.storageService.remove(ACTIVE_SCREEN_STORAGE_KEY, StorageScope.WORKSPACE);
++	}
++
++	// The editor area is hidden (maximized panel or secondary side bar). Like a suspended screen, the screen
++	// comes back with the editor area instead of un-maximizing it, unless an editor is opened first.
++	private restoreWithEditorArea(id: string): void {
++		const pending = this._register(new DisposableStore());
++		pending.add(this.editorService.onWillOpenEditor(e => {
++			if (this.editorGroupService.mainPart.getGroup(e.groupId)) {
++				pending.dispose();
++				this.forget();
++			}
++		}));
++		pending.add(this.layoutService.onDidChangePartVisibility(e => {
++			if (e.partId !== Parts.EDITOR_PART || !e.visible) {
++				return;
++			}
++			pending.dispose();
++			if (this.canRestore(id)) {
++				this.screenService.show(id, { preserveFocus: true }).catch(onUnexpectedError);
++			} else {
++				this.forget();
++			}
++		}));
 +	}
 +}
 +

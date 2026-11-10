@@ -59,7 +59,7 @@ Built-in extensions (`extension.isBuiltin`) may set two extra fields on `contrib
 
 Extensions that are not built in ignore both fields, so marketplace extensions are unaffected.
 
-When a container with an `openCommand` is opened in the side bar, a workbench contribution (`contrib/horizon/browser/horizon.contribution.ts`) re-opens the last regular side bar container (Explorer if that one is itself a launcher), hides the side bar, and runs the command. The same contribution closes an editor-area screen when a regular side bar view is opened outside such a redirect.
+When a container with an `openCommand` is opened in the side bar, a workbench contribution (`contrib/horizon/browser/horizon.contribution.ts`) re-opens the last regular side bar container (Explorer if that one is itself a launcher), hides the side bar, and runs the command. The same contribution closes an editor-area screen when a regular side bar view is opened outside such a redirect. Launcher commands never run at the same time: a launcher opened while another launcher's command is still running runs afterwards (the latest one wins), and opening a regular side bar view cancels it.
 
 ### `horizon.scm.openCommand`
 
@@ -82,7 +82,8 @@ Quick diff (gutter, overview ruler and minimap decorations) is unaffected. It de
 - The screen closes, and the editors return, when an editor opens in the main editor area, when a regular side bar view is opened (activity bar, view commands, Ctrl+B), or with **Horizon: Close Screen** (Ctrl+W / Ctrl+F4 while a screen is shown and focus is in the main window). No editor is closed.
 - A screen and the side bar are never shown together; the redirect of a launcher container does not close the screen. The panel and secondary side bar can be shown next to a screen. One screen is shown at a time, and hidden screens keep their webview for the session.
 - While the editor area is hidden (maximized panel or secondary side bar) the screen is suspended: it is hidden, reported as not visible, and `horizonActiveScreen` is empty. It comes back with the editor area.
-- The shown screen is restored after a window reload when the side bar is hidden. The context key `horizonActiveScreen` holds its id (empty when none is shown).
+- Showing a screen while the panel is maximized restores the panel to its normal size; a maximized secondary side bar is restored as well.
+- The shown screen is restored after a window reload when the side bar is hidden. The context key `horizonActiveScreen` holds its id (empty when none is shown). If the editor area is hidden at that moment (maximized panel or secondary side bar), the screen comes back when the editor area does, unless an editor is opened first.
 - `onView:<id>` activation events are generated from the contribution.
 
 ### Activity bar defaults
