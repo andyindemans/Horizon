@@ -28,15 +28,63 @@ index 83378707..052de3bd 100644
 +				...(openCommand ? { openCommand, rejectAddedViews: true } : {}),
  				order,
 diff --git a/src/vs/workbench/browser/parts/paneCompositeBar.ts b/src/vs/workbench/browser/parts/paneCompositeBar.ts
-index ee76b0ef..2bcd9234 100644
+index ee76b0ef..9243c29e 100644
 --- a/src/vs/workbench/browser/parts/paneCompositeBar.ts
 +++ b/src/vs/workbench/browser/parts/paneCompositeBar.ts
 @@ -20,3 +20,3 @@ import { URI, UriComponents } from '../../../base/common/uri.js';
  import { ToggleCompositePinnedAction, ICompositeBarColors, IActivityHoverOptions, ToggleCompositeBadgeAction, CompositeBarAction, ICompositeBar, ICompositeBarActionItem } from './compositeBarActions.js';
 -import { IViewDescriptorService, ViewContainer, IViewContainerModel, ViewContainerLocation } from '../../common/views.js';
-+import { IViewDescriptorService, ViewContainer, IViewContainerModel, ViewContainerLocation, launchViewContainer } from '../../common/views.js';
++import { IViewDescriptorService, ViewContainer, IViewContainerModel, ViewContainerLocation, launchViewContainer, getCheckedViewContainerLauncher, onDidChangeCheckedViewContainerLauncher } from '../../common/views.js';
  import { IContextKeyService, ContextKeyExpr } from '../../../platform/contextkey/common/contextkey.js';
-@@ -811,2 +811,7 @@ class ViewContainerActivityAction extends CompositeBarAction {
+@@ -98,2 +98,5 @@ export class PaneCompositeBar extends Disposable {
+ 
++	// Horizon: the launcher view container this bar last showed as checked (see updateCheckedLauncher)
++	private checkedLauncher: string | undefined;
++
+ 	constructor(
+@@ -231,2 +234,5 @@ export class PaneCompositeBar extends Disposable {
+ 
++		// Horizon: checked launcher view container
++		this._register(onDidChangeCheckedViewContainerLauncher(() => this.updateCheckedLauncher()));
++
+ 		// Extension registration
+@@ -267,2 +273,3 @@ export class PaneCompositeBar extends Disposable {
+ 			this.compositeBar.deactivateComposite(id);
++			this.updateCheckedLauncher(); // Horizon
+ 		}
+@@ -308,2 +315,26 @@ export class PaneCompositeBar extends Disposable {
+ 
++	/**
++	 * Horizon: shows the launcher view container whose screen is shown (see getCheckedViewContainerLauncher in
++	 * common/views.ts) as checked while the side bar shows no view container. Opening a view container checks that
++	 * one instead, as usual.
++	 */
++	private updateCheckedLauncher(): void {
++		if (this.location !== ViewContainerLocation.Sidebar) {
++			return;
++		}
++
++		const id = getCheckedViewContainerLauncher();
++		const previous = this.checkedLauncher;
++		this.checkedLauncher = id;
++
++		// deactivateComposite deactivates whichever entry is checked, so only call it while the previous launcher is that entry
++		if (previous && previous !== id && this.compositeActions.get(previous)?.activityAction.checked) {
++			this.compositeBar.deactivateComposite(previous);
++		}
++
++		if (id && !this.paneCompositePart.getActivePaneComposite() && this.getViewContainer(id)) {
++			this.compositeBar.activateComposite(id);
++		}
++	}
++
+ 	create(parent: HTMLElement): HTMLElement {
+@@ -367,2 +398,4 @@ export class PaneCompositeBar extends Disposable {
+ 		}
++
++		this.updateCheckedLauncher(); // Horizon: also when this bar is created while a launcher is checked
+ 	}
+@@ -811,2 +844,7 @@ class ViewContainerActivityAction extends CompositeBarAction {
  
 +		// Horizon: a launcher container runs its command instead of opening, so the side bar does not change (see contrib/horizon/browser/horizon.contribution.ts)
 +		if (launchViewContainer(this.compositeBarActionItem.id)) {
@@ -45,7 +93,7 @@ index ee76b0ef..2bcd9234 100644
 +
  		const focus = (event && 'preserveFocus' in event) ? !event.preserveFocus : true;
 diff --git a/src/vs/workbench/common/views.ts b/src/vs/workbench/common/views.ts
-index 72f44dea..a91e699d 100644
+index 72f44dea..8bebecae 100644
 --- a/src/vs/workbench/common/views.ts
 +++ b/src/vs/workbench/common/views.ts
 @@ -139,2 +139,9 @@ export interface IViewContainerDescriptor {
@@ -58,7 +106,7 @@ index 72f44dea..a91e699d 100644
 +	readonly openCommand?: string;
 +
  	/**
-@@ -148,2 +155,26 @@ export interface IViewContainerDescriptor {
+@@ -148,2 +155,47 @@ export interface IViewContainerDescriptor {
  
 +/**
 + * Horizon: runs launcher view containers (see {@link IViewContainerDescriptor.openCommand}) from their
@@ -84,13 +132,34 @@ index 72f44dea..a91e699d 100644
 +	return viewContainerLauncher?.launch(id) ?? false;
 +}
 +
++let checkedViewContainerLauncher: string | undefined;
++const onDidChangeCheckedViewContainerLauncherEmitter = new Emitter<void>();
++
++/** Horizon: fires when {@link getCheckedViewContainerLauncher} changes. */
++export const onDidChangeCheckedViewContainerLauncher: Event<void> = onDidChangeCheckedViewContainerLauncherEmitter.event;
++
++/**
++ * Horizon: the launcher view container whose editor-area screen is shown, if any. The side bar's activity bar shows its
++ * entry as checked while the side bar shows no view container. Set by contrib/horizon/browser/horizon.contribution.ts.
++ */
++export function getCheckedViewContainerLauncher(): string | undefined {
++	return checkedViewContainerLauncher;
++}
++
++export function setCheckedViewContainerLauncher(id: string | undefined): void {
++	if (checkedViewContainerLauncher !== id) {
++		checkedViewContainerLauncher = id;
++		onDidChangeCheckedViewContainerLauncherEmitter.fire();
++	}
++}
++
  export interface IViewContainersRegistry {
 diff --git a/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
 new file mode 100644
-index 00000000..0a477d71
+index 00000000..cce3529b
 --- /dev/null
 +++ b/src/vs/workbench/contrib/horizon/browser/horizon.contribution.ts
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,299 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Horizon. All rights reserved.
 + *  Licensed under the MIT License.
@@ -98,7 +167,7 @@ index 00000000..0a477d71
 +
 +import { localize } from '../../../../nls.js';
 +import { Registry } from '../../../../platform/registry/common/platform.js';
-+import { IViewDescriptorService, setViewContainerLauncher, ViewContainerLocation } from '../../../common/views.js';
++import { IViewDescriptorService, setCheckedViewContainerLauncher, setViewContainerLauncher, ViewContainerLocation } from '../../../common/views.js';
 +import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 +import { IPaneCompositePartService } from '../../../services/panecomposite/browser/panecomposite.js';
 +import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
@@ -108,7 +177,7 @@ index 00000000..0a477d71
 +import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 +import { INotificationService } from '../../../../platform/notification/common/notification.js';
 +import { ILogService } from '../../../../platform/log/common/log.js';
-+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
++import { Disposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 +import { onUnexpectedError } from '../../../../base/common/errors.js';
 +import { runAtThisOrScheduleAtNextAnimationFrame } from '../../../../base/browser/dom.js';
 +import { mainWindow } from '../../../../base/browser/window.js';
@@ -120,6 +189,7 @@ index 00000000..0a477d71
 +const SCM_OPEN_COMMAND_SETTING = 'horizon.scm.openCommand';
 +const UNPIN_BY_DEFAULT = ['workbench.view.debug', 'workbench.view.extension.test', 'workbench.view.remote'];
 +const LAUNCHER_FRAME_PRIORITY = 10000; // before other frame work (editor rendering uses 100), so it sees the restored side bar
++const SCREEN_LAUNCHERS_STORAGE_KEY = 'horizon.launchers.screenLaunchers'; // screen id -> the launcher view container that last showed it
 +
 +Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 +	id: 'horizon',
@@ -148,6 +218,7 @@ index 00000000..0a477d71
 +	private sidebarJustShown = false; // the side bar became visible in the current task
 +	private sidebarHiddenBeforeLauncher = false; // the side bar was hidden before the pending launcher container opened it
 +	private readonly launcherFrame = this._register(new MutableDisposable());
++	private launchingId: string | undefined; // the launcher whose command started last and has not shown a screen yet
 +
 +	constructor(
 +		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
@@ -159,6 +230,7 @@ index 00000000..0a477d71
 +		@ILogService private readonly logService: ILogService,
 +		@IHorizonScreenService private readonly screenService: IHorizonScreenService,
 +		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService,
++		@IStorageService private readonly storageService: IStorageService,
 +	) {
 +		super();
 +
@@ -200,6 +272,15 @@ index 00000000..0a477d71
 +				this.onLauncherOpened(activeId, command);
 +			}
 +		}
++
++		// The launcher that showed the shown screen is checked in the activity bar (see setCheckedViewContainerLauncher).
++		this._register(toDisposable(() => setCheckedViewContainerLauncher(undefined)));
++		this._register(this.screenService.onDidShowScreen(screenId => this.checkLauncherForScreen(screenId)));
++		this._register(this.screenService.onDidHideScreen(() => setCheckedViewContainerLauncher(undefined)));
++		const shownScreen = this.screenService.activeScreen;
++		if (shownScreen !== undefined) {
++			this.checkLauncherForScreen(shownScreen); // shown before this contribution was created (restored after a reload)
++		}
 +	}
 +
 +	private getCommand(id: string): string | undefined {
@@ -209,6 +290,49 @@ index 00000000..0a477d71
 +		}
 +
 +		return this.viewDescriptorService.getViewContainerById(id)?.openCommand;
++	}
++
++	/** A screen was shown: check the launcher that showed it or, when no launcher did, the launcher that last showed it. */
++	private checkLauncherForScreen(screenId: string): void {
++		const launchers = this.getScreenLaunchers();
++		const launchingId = this.launchingId;
++		this.launchingId = undefined;
++		if (launchingId !== undefined) {
++			if (launchers[screenId] !== launchingId) {
++				launchers[screenId] = launchingId;
++				this.storageService.store(SCREEN_LAUNCHERS_STORAGE_KEY, JSON.stringify(launchers), StorageScope.WORKSPACE, StorageTarget.MACHINE);
++			}
++			setCheckedViewContainerLauncher(launchingId);
++			return;
++		}
++
++		const remembered = launchers[screenId];
++		if (remembered !== undefined && this.isSidebarLauncher(remembered)) {
++			setCheckedViewContainerLauncher(remembered);
++		}
++	}
++
++	private isSidebarLauncher(id: string): boolean {
++		const container = this.viewDescriptorService.getViewContainerById(id);
++		return !!container && this.viewDescriptorService.getViewContainerLocation(container) === ViewContainerLocation.Sidebar && !!this.getCommand(id);
++	}
++
++	/** Screen id -> the launcher view container that last showed it, from workspace storage. */
++	private getScreenLaunchers(): Record<string, string> {
++		const result: Record<string, string> = {};
++		try {
++			const parsed: unknown = JSON.parse(this.storageService.get(SCREEN_LAUNCHERS_STORAGE_KEY, StorageScope.WORKSPACE, '{}'));
++			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
++				for (const [screenId, launcherId] of Object.entries(parsed)) {
++					if (typeof launcherId === 'string') {
++						result[screenId] = launcherId;
++					}
++				}
++			}
++		} catch {
++			// a malformed value is ignored
++		}
++		return result;
 +	}
 +
 +	private closeScreenForSidebar(): void {
@@ -277,9 +401,11 @@ index 00000000..0a477d71
 +		}
 +
 +		this.redirecting = true;
++		this.launchingId = id; // the next screen shown is this launcher's (see checkLauncherForScreen)
 +		try {
 +			await this.commandService.executeCommand(command);
 +		} catch (err) {
++			this.launchingId = undefined;
 +			const title = this.viewDescriptorService.getViewContainerById(id)?.title.value ?? id;
 +			this.logService.error(err);
 +			this.notificationService.error(localize('horizon.launcherFailed', "Could not open {0}: {1}", title, String(err)));
@@ -335,10 +461,10 @@ index 00000000..0a477d71
 +registerWorkbenchContribution2(HorizonActivityBarDefaultsContribution.ID, HorizonActivityBarDefaultsContribution, WorkbenchPhase.BlockStartup);
 diff --git a/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts b/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts
 new file mode 100644
-index 00000000..cd63ff05
+index 00000000..d1eb7841
 --- /dev/null
 +++ b/src/vs/workbench/contrib/horizon/browser/horizonScreens.ts
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,521 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Horizon. All rights reserved.
 + *  Licensed under the MIT License.
@@ -350,7 +476,7 @@ index 00000000..cd63ff05
 +import { mainWindow } from '../../../../base/browser/window.js';
 +import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 +import { onUnexpectedError } from '../../../../base/common/errors.js';
-+import { Emitter } from '../../../../base/common/event.js';
++import { Emitter, Event } from '../../../../base/common/event.js';
 +import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 +import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 +import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -434,6 +560,10 @@ index 00000000..cd63ff05
 +	readonly activeScreen: string | undefined;
 +	/** True while the screen host itself changes the layout (editor area, side bar); side bar events then are not user navigation. */
 +	readonly isChangingLayout: boolean;
++	/** Fires with the screen id at the end of every show, also when that screen was already shown. */
++	readonly onDidShowScreen: Event<string>;
++	/** Fires with the screen id when the shown screen is hidden; suspending or resuming a screen fires neither event. */
++	readonly onDidHideScreen: Event<string>;
 +	has(id: string): boolean;
 +	show(id: string, options?: { readonly preserveFocus?: boolean }): Promise<void>;
 +	hide(): void;
@@ -452,6 +582,11 @@ index 00000000..cd63ff05
 +	private suspended = false; // the editor part is hidden (for example a maximized panel) while a screen is active
 +	private changingLayout = false;
 +	private shownSize: { readonly width: number; readonly height: number } | undefined; // the host size while a screen was last shown
++
++	private readonly _onDidShowScreen = this._register(new Emitter<string>());
++	readonly onDidShowScreen = this._onDidShowScreen.event;
++	private readonly _onDidHideScreen = this._register(new Emitter<string>());
++	readonly onDidHideScreen = this._onDidHideScreen.event;
 +
 +	constructor(
 +		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
@@ -593,6 +728,8 @@ index 00000000..cd63ff05
 +		if (!options?.preserveFocus || this.layoutService.hasFocus(Parts.EDITOR_PART)) {
 +			entry.webview.focus();
 +		}
++
++		this._onDidShowScreen.fire(id);
 +	}
 +
 +	hide(): void {
@@ -618,6 +755,7 @@ index 00000000..cd63ff05
 +		if (!wasSuspended) {
 +			entry.onDidChangeVisibility.fire(false); // a suspended screen already reported false
 +		}
++		this._onDidHideScreen.fire(entry.descriptor.id);
 +	}
 +
 +	private suspend(entry: IScreenEntry): void {
